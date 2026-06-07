@@ -32,4 +32,4 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run paper loop (~5h, one cycle/min, auto-push state)
-        run: python -u paper.py --minutes 6 --autopush
+        run: python -u paper.py --minutes 290 --autopush
