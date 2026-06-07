@@ -78,12 +78,16 @@ def append_log(row: dict):
         w.writerow(row)
 
 
+LAST_EVAL = "starting up"
+
+
 def write_heartbeat(note: str):
     hb = {
         "utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "bankroll": load_bankroll(),
         "open_bets": len(load_pending()),
         "last": note,
+        "last_eval": LAST_EVAL,
     }
     with open("heartbeat.json", "w") as f:
         json.dump(hb, f, indent=2)
@@ -145,12 +149,14 @@ import ast
 
 
 def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending):
+    global LAST_EVAL
     if any(p.get("window_start") == window_start for p in pending):
         return False  # already acted this window
 
     price_to_beat = feed.price_at(window_start)
     cur = feed.price_now()
     if price_to_beat is None or cur is None:
+        LAST_EVAL = f"window {window_start}: no price-to-beat (feed gap)"
         print(f"  [{window_start}] no price-to-beat yet, skip window")
         return False
 
@@ -161,12 +167,15 @@ def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending):
 
     m = market_by_window(window_start)
     if not m:
+        LAST_EVAL = f"window {window_start}: market not found"
         print(f"  [{window_start}] market not found, skip")
         return False
     toks = ast.literal_eval(m["clobTokenIds"])
     up_ask = best_ask(toks[0])
     down_ask = best_ask(toks[1])
 
+    summary = (f"P(up)={p_up:.3f} move={move:+.1f} t={t_remaining:.0f}s "
+               f"UpAsk={up_ask} DownAsk={down_ask}")
     print(f"  window {dt.datetime.utcfromtimestamp(window_start):%H:%M} | "
           f"beat={price_to_beat:.1f} cur={cur:.1f} move={move:+.1f} "
           f"sig/s={sig:.2f} t={t_remaining:.0f}s | P(up)={p_up:.3f} "
@@ -180,14 +189,17 @@ def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending):
     elif edge_down > config.MIN_EDGE:
         side, ask, q, edge = "Down", down_ask, 1 - p_up, edge_down
     else:
+        LAST_EVAL = f"no edge ({summary})"
         print("  -> no edge, skip")
         return False
 
     bankroll = load_bankroll()
     stake = kelly_stake(q, ask, bankroll)
     if stake < config.MIN_STAKE:
+        LAST_EVAL = f"stake<min ({summary})"
         print(f"  -> Kelly stake ${stake:.2f} < min, skip")
         return False
+    LAST_EVAL = f"BET {side}@{ask} edge={edge:+.3f} ({summary})"
 
     pending.append({
         "decided_at": dt.datetime.now(dt.timezone.utc).isoformat(),
