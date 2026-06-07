@@ -1,0 +1,35 @@
+name: paper-bot
+
+# GitHub's */5 cron is heavily throttled (often only fires every 1-3 hours),
+# which is useless for a 5-minute market. Instead each job runs a long bounded
+# loop (one cycle per minute for ~5 hours) and pushes state every cycle. The
+# cron just restarts the loop periodically; concurrency stops overlap.
+on:
+  schedule:
+    - cron: "0 */3 * * *"   # restart the loop every 3 hours
+  workflow_dispatch:
+
+concurrency:
+  group: paper-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run paper loop (~5h, one cycle/min, auto-push state)
+        run: python -u paper.py --minutes 6 --autopush
