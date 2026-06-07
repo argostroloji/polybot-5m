@@ -1,7 +1,7 @@
 {
-  "utc": "2026-06-07T23:38:42+00:00",
+  "utc": "2026-06-07T23:39:44+00:00",
   "bankroll": 100.4348,
   "open_bets": 0,
   "last": "ok",
-  "last_eval": "window 1780875000: no price-to-beat (feed gap)"
+  "last_eval": "window 1780875300: no price-to-beat (feed gap)"
 }
