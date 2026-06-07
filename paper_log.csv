@@ -1,0 +1,2 @@
+decided_at,market,side,model_prob,entry_price,edge,stake,price_to_beat,final_price,went_up,won,pnl_usd,bankroll
+2026-06-07T22:09:19.346212+00:00,btc-updown-5m-1780869900,Up,1.0,0.92,0.08,5.0,61787.25961322795,61817.48,True,True,0.4348,100.4348
