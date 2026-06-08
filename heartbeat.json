@@ -1,7 +1,7 @@
 {
-  "utc": "2026-06-08T01:38:30+00:00",
+  "utc": "2026-06-08T01:39:31+00:00",
   "bankroll": 100.4348,
   "open_bets": 0,
   "last": "ok",
-  "last_eval": "no edge (P(up)=0.500 move=+0.0 t=43s UpAsk=0.95 DownAsk=0.06)"
+  "last_eval": "no edge (P(up)=0.500 move=+0.0 t=44s UpAsk=0.4 DownAsk=0.63)"
 }
