@@ -27,7 +27,9 @@ CLOB = "https://clob.polymarket.com"
 # appears (resting/marketable limit order behaviour). ENTRY_START = seconds into
 # the window before we start looking; ENTRY_CUTOFF = stop this many seconds
 # before close (leave time for a real fill).
-ENTRY_START_SEC = 120            # start hunting 2 min into the 5-min window
+ENTRY_START_SEC = 255            # only hunt in the last ~45s (was 120 = too
+                                 # early; outcomes reversed and we lost). Later
+                                 # entry = outcome more settled, fewer reversals.
 ENTRY_CUTOFF_SEC = 8             # stop hunting this many seconds before close
 RESOLVE_BUFFER_SEC = 8           # wait this long after close before resolving
 
