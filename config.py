@@ -33,7 +33,11 @@ VOL_LOOKBACK_SEC = 120           # window for per-second volatility estimate
 MIN_SIGMA = 1.0                  # floor on per-second sigma ($) to avoid /0
 
 # --- Betting / edge ---
-MIN_EDGE = 0.05                  # require model_prob - ask > this to bet
+# Only bet when the outcome is NEARLY SETTLED (our model is confident) AND the
+# lagging market still misprices it. Betting a cheap side with no real
+# information (P~0.5) is just gambling, so we require high confidence first.
+MIN_CONFIDENCE = 0.85            # only bet if model prob for the side >= this
+MIN_EDGE = 0.05                  # and require model_prob - ask > this
 TRADE_COST = 0.0                 # extra modeled cost (ask already includes spread)
 
 # --- Sizing (fractional Kelly, capped) ---

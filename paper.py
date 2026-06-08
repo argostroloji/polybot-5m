@@ -148,15 +148,18 @@ def kelly_stake(q: float, ask: float, bankroll: float) -> float:
 import ast
 
 
-def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending):
+def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending,
+           window_open: dict):
     global LAST_EVAL
     if any(p.get("window_start") == window_start for p in pending):
         return False  # already acted this window
 
-    price_to_beat = feed.price_at(window_start)
+    # price-to-beat = the price we captured when this window opened (first loop
+    # tick at/after the boundary), matching Polymarket's resolution rule.
+    price_to_beat = window_open.get(window_start)
     cur = feed.price_now()
     if price_to_beat is None or cur is None:
-        LAST_EVAL = f"window {window_start}: no price-to-beat (feed gap)"
+        LAST_EVAL = f"window {window_start}: no price-to-beat (joined mid-window)"
         print(f"  [{window_start}] no price-to-beat yet, skip window")
         return False
 
@@ -184,13 +187,17 @@ def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending):
     edge_up = (p_up - up_ask) if up_ask else -1
     edge_down = ((1 - p_up) - down_ask) if down_ask else -1
 
-    if edge_up >= edge_down and edge_up > config.MIN_EDGE:
+    # Only consider a side if we're CONFIDENT it wins (outcome near-settled).
+    up_ok = p_up >= config.MIN_CONFIDENCE and edge_up > config.MIN_EDGE
+    down_ok = (1 - p_up) >= config.MIN_CONFIDENCE and edge_down > config.MIN_EDGE
+
+    if up_ok and edge_up >= edge_down:
         side, ask, q, edge = "Up", up_ask, p_up, edge_up
-    elif edge_down > config.MIN_EDGE:
+    elif down_ok:
         side, ask, q, edge = "Down", down_ask, 1 - p_up, edge_down
     else:
         LAST_EVAL = f"no edge ({summary})"
-        print("  -> no edge, skip")
+        print("  -> no edge/confidence, skip")
         return False
 
     bankroll = load_bankroll()
@@ -219,7 +226,7 @@ def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending):
     return True
 
 
-def resolve_due(feed: ChainlinkFeed, pending):
+def resolve_due(feed: ChainlinkFeed, pending, window_open: dict):
     now = time.time()
     changed = False
     bankroll = load_bankroll()
@@ -231,9 +238,13 @@ def resolve_due(feed: ChainlinkFeed, pending):
         if now < p["window_end"] + config.RESOLVE_BUFFER_SEC:
             still.append(p)
             continue
-        final = feed.price_at(p["window_end"])
+        # close price = the open price of the next window (= price at this
+        # window's end boundary). Fall back to feed history / latest price.
+        final = window_open.get(p["window_end"])
         if final is None:
-            final = feed.price_now()  # fallback
+            final = feed.price_at(p["window_end"])
+        if final is None:
+            final = feed.price_now()  # last resort
         if final is None:
             still.append(p)
             continue
@@ -317,26 +328,40 @@ def main():
           f"(autopush={autopush}, one_shot={one_shot})")
 
     last_push = 0.0
-    handled = set()  # window_starts we've already decided on
+    handled = set()        # window_starts we've already decided on
+    window_open = {}       # window_start -> price captured when window opened
 
     while time.time() < deadline:
-        pending = load_pending()
-        state_changed = resolve_due(feed, pending)
-
         now = time.time()
         ws = int(now // config.WINDOW_SEC) * config.WINDOW_SEC
         we = ws + config.WINDOW_SEC
-        decision_t = we - config.DECISION_LEAD_SEC
 
+        # Capture this window's open price the first time we see it (the first
+        # tick at/after the boundary), like Polymarket's price-to-beat.
+        if ws not in window_open:
+            pr = feed.price_now()
+            if pr is not None:
+                window_open[ws] = pr
+            # prune old entries (keep ~30 min)
+            window_open = {k: v for k, v in window_open.items() if k >= ws - 1800}
+
+        pending = load_pending()
+        state_changed = resolve_due(feed, pending, window_open)
+
+        decision_t = we - config.DECISION_LEAD_SEC
         if ws not in handled and decision_t <= now < we - 2:
-            if decide(feed, ws, we, pending):
+            if decide(feed, ws, we, pending, window_open):
                 state_changed = True
             handled.add(ws)
             if one_shot:
-                # wait for this window to resolve, then exit
                 while time.time() < we + config.RESOLVE_BUFFER_SEC + 2:
+                    # keep capturing so we get the close price
+                    n2 = time.time()
+                    w2 = int(n2 // config.WINDOW_SEC) * config.WINDOW_SEC
+                    if w2 not in window_open and feed.price_now() is not None:
+                        window_open[w2] = feed.price_now()
                     time.sleep(2)
-                resolve_due(feed, load_pending())
+                resolve_due(feed, load_pending(), window_open)
                 break
 
         write_heartbeat("ok")
@@ -344,9 +369,8 @@ def main():
             git_autopush()
             last_push = now
 
-        # prune handled set
         handled = {w for w in handled if w >= ws - config.WINDOW_SEC}
-        time.sleep(5)
+        time.sleep(3)
 
     print("Done.")
 
