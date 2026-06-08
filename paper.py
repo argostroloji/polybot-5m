@@ -81,7 +81,7 @@ def append_log(row: dict):
 LAST_EVAL = "starting up"
 
 
-def write_heartbeat(note: str):
+def write_heartbeat(note: str, feed=None):
     hb = {
         "utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "bankroll": load_bankroll(),
@@ -89,6 +89,10 @@ def write_heartbeat(note: str):
         "last": note,
         "last_eval": LAST_EVAL,
     }
+    if feed is not None:
+        hb["feed_price"] = feed.latest_price
+        hb["feed_age_sec"] = (int(time.time()) - feed.latest_ts
+                              if feed.latest_ts else None)
     with open("heartbeat.json", "w") as f:
         json.dump(hb, f, indent=2)
 
@@ -364,7 +368,7 @@ def main():
                 resolve_due(feed, load_pending(), window_open)
                 break
 
-        write_heartbeat("ok")
+        write_heartbeat("ok", feed)
         if autopush and (state_changed or now - last_push > 60):
             git_autopush()
             last_push = now
