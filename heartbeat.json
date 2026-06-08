@@ -1,9 +1,9 @@
 {
-  "utc": "2026-06-08T04:18:37+00:00",
+  "utc": "2026-06-08T04:19:39+00:00",
   "bankroll": 106.7022,
   "open_bets": 0,
   "last": "ok",
-  "last_eval": "no edge (P(up)=0.523 move=+1.5 t=44s UpAsk=0.3 DownAsk=0.71)",
-  "feed_price": 62973.74696365972,
-  "feed_age_sec": 4
+  "last_eval": "no edge (P(up)=0.833 move=+14.2 t=42s UpAsk=0.28 DownAsk=0.73)",
+  "feed_price": 62924.98377695489,
+  "feed_age_sec": 16
 }
