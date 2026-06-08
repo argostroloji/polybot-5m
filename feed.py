@@ -30,6 +30,23 @@ class ChainlinkFeed:
     # ---- public API ----
     def start(self):
         threading.Thread(target=self._run, daemon=True).start()
+        threading.Thread(target=self._watchdog, daemon=True).start()
+
+    def _watchdog(self, stale_limit=20, check_every=5):
+        """The RTDS socket sometimes keeps the TCP alive (answers pings) but
+        stops sending price updates. run_forever won't reconnect in that case,
+        so we force a reconnect when data goes stale."""
+        while not self._stop:
+            time.sleep(check_every)
+            if self.latest_ts is None:
+                continue
+            age = int(time.time()) - self.latest_ts
+            if age > stale_limit and self._ws is not None:
+                print(f"  feed stale ({age}s), forcing reconnect")
+                try:
+                    self._ws.close()
+                except Exception:
+                    pass
 
     def wait_ready(self, timeout=20) -> bool:
         end = time.time() + timeout
