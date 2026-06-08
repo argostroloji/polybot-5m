@@ -1,1 +1,7 @@
-{"utc":"reset","bankroll":100.0,"open_bets":0,"last":"reset","last_eval":"reset"}
+{
+  "utc": "2026-06-08T01:14:06+00:00",
+  "bankroll": 100.4348,
+  "open_bets": 0,
+  "last": "ok",
+  "last_eval": "starting up"
+}
