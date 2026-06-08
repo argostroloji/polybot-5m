@@ -22,7 +22,13 @@ GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 
 # --- Strategy timing ---
-DECISION_LEAD_SEC = 45           # decide this many seconds before window close
+# We don't fire once at the last second (a speed race we can't win). Instead we
+# watch the whole back half of the window and take a favorable offer whenever it
+# appears (resting/marketable limit order behaviour). ENTRY_START = seconds into
+# the window before we start looking; ENTRY_CUTOFF = stop this many seconds
+# before close (leave time for a real fill).
+ENTRY_START_SEC = 120            # start hunting 2 min into the 5-min window
+ENTRY_CUTOFF_SEC = 8             # stop hunting this many seconds before close
 RESOLVE_BUFFER_SEC = 8           # wait this long after close before resolving
 
 # --- Brownian probability model ---
@@ -36,9 +42,10 @@ MIN_SIGMA = 1.0                  # floor on per-second sigma ($) to avoid /0
 # Only bet when the outcome is NEARLY SETTLED (our model is confident) AND the
 # lagging market still misprices it. Betting a cheap side with no real
 # information (P~0.5) is just gambling, so we require high confidence first.
-MIN_CONFIDENCE = 0.85            # only bet if model prob for the side >= this
-MIN_EDGE = 0.05                  # and require model_prob - ask > this
-TRADE_COST = 0.0                 # extra modeled cost (ask already includes spread)
+MIN_CONFIDENCE = 0.85            # only buy if model prob for the side >= this
+MIN_EDGE = 0.05                  # max price we'll pay = model_prob - MIN_EDGE
+TRADE_COST_USD = 0.0             # per-trade fee/gas estimate (Polymarket CLOB
+                                 # currently ~0; bump if you observe fees)
 
 # --- Sizing (fractional Kelly, capped) ---
 KELLY_FRACTION = 0.5             # half-Kelly

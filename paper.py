@@ -113,13 +113,21 @@ def market_by_window(window_start: int):
 
 
 def best_ask(token_id: str):
+    """Return (best_ask_price, size_at_that_price) or (None, None).
+
+    Size matters: in reality we can only buy as much as is actually offered at
+    that price (liquidity), not an unlimited amount.
+    """
     try:
         b = requests.get(f"{config.CLOB}/book", params={"token_id": token_id},
                         headers=HEADERS, timeout=15).json()
     except Exception:
-        return None
-    asks = [float(x["price"]) for x in b.get("asks", [])]
-    return min(asks) if asks else None
+        return None, None
+    asks = b.get("asks", [])
+    if not asks:
+        return None, None
+    best = min(asks, key=lambda x: float(x["price"]))
+    return float(best["price"]), float(best["size"])
 
 
 # ---------------- volatility + probability ----------------
@@ -172,46 +180,51 @@ def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending,
     move = cur - price_to_beat
     p_up = prob_up(move, t_remaining, sig)
 
+    # Which side do we believe wins, and how confident?
+    if p_up >= 0.5:
+        side, token_idx, q = "Up", 0, p_up
+    else:
+        side, token_idx, q = "Down", 1, 1 - p_up
+
+    summary = f"P(up)={p_up:.3f} move={move:+.1f} t={t_remaining:.0f}s"
+
+    # Need high confidence (outcome near-settled) before we'll buy anything.
+    if q < config.MIN_CONFIDENCE:
+        LAST_EVAL = f"low conf {q:.2f} ({summary})"
+        return False
+
     m = market_by_window(window_start)
     if not m:
         LAST_EVAL = f"window {window_start}: market not found"
-        print(f"  [{window_start}] market not found, skip")
         return False
     toks = ast.literal_eval(m["clobTokenIds"])
-    up_ask = best_ask(toks[0])
-    down_ask = best_ask(toks[1])
+    ask, ask_size = best_ask(toks[token_idx])
+    if ask is None:
+        LAST_EVAL = f"{side}: no ask offered ({summary})"
+        return False
 
-    summary = (f"P(up)={p_up:.3f} move={move:+.1f} t={t_remaining:.0f}s "
-               f"UpAsk={up_ask} DownAsk={down_ask}")
-    print(f"  window {dt.datetime.utcfromtimestamp(window_start):%H:%M} | "
-          f"beat={price_to_beat:.1f} cur={cur:.1f} move={move:+.1f} "
-          f"sig/s={sig:.2f} t={t_remaining:.0f}s | P(up)={p_up:.3f} "
-          f"| Up ask={up_ask} Down ask={down_ask}")
-
-    edge_up = (p_up - up_ask) if up_ask else -1
-    edge_down = ((1 - p_up) - down_ask) if down_ask else -1
-
-    # Only consider a side if we're CONFIDENT it wins (outcome near-settled).
-    up_ok = p_up >= config.MIN_CONFIDENCE and edge_up > config.MIN_EDGE
-    down_ok = (1 - p_up) >= config.MIN_CONFIDENCE and edge_down > config.MIN_EDGE
-
-    if up_ok and edge_up >= edge_down:
-        side, ask, q, edge = "Up", up_ask, p_up, edge_up
-    elif down_ok:
-        side, ask, q, edge = "Down", down_ask, 1 - p_up, edge_down
-    else:
-        LAST_EVAL = f"no edge ({summary})"
-        print("  -> no edge/confidence, skip")
+    # REALISTIC LIMIT ORDER: we only buy if the market is offering the winning
+    # side cheaper than our fair value minus the required edge. Our max price
+    # is q - MIN_EDGE; we fill at the actual best ask (price-taker), and only
+    # up to the size actually available (liquidity), capped by Kelly.
+    max_price = q - config.MIN_EDGE
+    if ask > max_price:
+        LAST_EVAL = f"{side} ask {ask:.2f} > limit {max_price:.2f} ({summary})"
         return False
 
     bankroll = load_bankroll()
-    stake = kelly_stake(q, ask, bankroll)
-    if stake < config.MIN_STAKE:
-        LAST_EVAL = f"stake<min ({summary})"
-        print(f"  -> Kelly stake ${stake:.2f} < min, skip")
+    target_usd = kelly_stake(q, ask, bankroll)
+    shares_target = target_usd / ask
+    shares = min(shares_target, ask_size)        # can't buy more than offered
+    cost = shares * ask
+    if cost < config.MIN_STAKE:
+        LAST_EVAL = (f"{side}@{ask:.2f} liquidity ${cost:.2f}<min "
+                     f"(ask_size={ask_size:.1f}) ({summary})")
         return False
-    LAST_EVAL = f"BET {side}@{ask} edge={edge:+.3f} ({summary})"
 
+    edge = q - ask
+    LAST_EVAL = (f"FILL {side}@{ask:.2f} ${cost:.2f} edge={edge:+.3f} "
+                 f"({summary})")
     pending.append({
         "decided_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "market": m["slug"],
@@ -219,14 +232,16 @@ def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending,
         "window_end": window_end,
         "side": side,
         "entry_price": ask,
+        "shares": round(shares, 4),
         "model_prob": round(q, 4),
         "edge": round(edge, 4),
         "price_to_beat": price_to_beat,
-        "stake": round(stake, 2),
+        "stake": round(cost, 4),
     })
     save_pending(pending)
-    print(f"  -> PAPER BET {side} @ {ask} stake ${stake:.2f} "
-          f"(P={q:.3f}, edge {edge:+.3f})")
+    print(f"  window {dt.datetime.utcfromtimestamp(window_start):%H:%M} -> "
+          f"FILL {side} {shares:.1f}sh @ {ask:.2f} = ${cost:.2f} "
+          f"(P={q:.3f}, edge {edge:+.3f}, ask_size={ask_size:.1f})")
     return True
 
 
@@ -254,8 +269,12 @@ def resolve_due(feed: ChainlinkFeed, pending, window_open: dict):
             continue
         went_up = final >= p["price_to_beat"]
         won = (p["side"] == "Up" and went_up) or (p["side"] == "Down" and not went_up)
-        stake = p["stake"]
-        pnl = stake * (1.0 - p["entry_price"]) / p["entry_price"] if won else -stake
+        cost = p["stake"]
+        # shares each pay $1 if won, $0 if lost. Subtract a per-trade cost
+        # (fees/gas) to stay conservative.
+        shares = p.get("shares", cost / p["entry_price"])
+        gross = (shares - cost) if won else (-cost)
+        pnl = gross - config.TRADE_COST_USD
         bankroll += pnl
         append_log({
             "decided_at": p["decided_at"],
@@ -263,8 +282,9 @@ def resolve_due(feed: ChainlinkFeed, pending, window_open: dict):
             "side": p["side"],
             "model_prob": p["model_prob"],
             "entry_price": p["entry_price"],
+            "shares": round(shares, 4),
             "edge": p["edge"],
-            "stake": stake,
+            "cost_usd": round(cost, 4),
             "price_to_beat": p["price_to_beat"],
             "final_price": round(final, 2),
             "went_up": went_up,
@@ -332,7 +352,6 @@ def main():
           f"(autopush={autopush}, one_shot={one_shot})")
 
     last_push = 0.0
-    handled = set()        # window_starts we've already decided on
     window_open = {}       # window_start -> price captured when window opened
 
     while time.time() < deadline:
@@ -352,14 +371,17 @@ def main():
         pending = load_pending()
         state_changed = resolve_due(feed, pending, window_open)
 
-        decision_t = we - config.DECISION_LEAD_SEC
-        if ws not in handled and decision_t <= now < we - 2:
+        # Hunt for a favorable fill across the back half of the window. We keep
+        # checking every tick (until filled) instead of firing once — so we
+        # take the cheap offer whenever it appears, no last-second race.
+        entry_open = ws + config.ENTRY_START_SEC
+        entry_close = we - config.ENTRY_CUTOFF_SEC
+        already = any(p.get("window_start") == ws for p in pending)
+        if not already and entry_open <= now < entry_close:
             if decide(feed, ws, we, pending, window_open):
                 state_changed = True
-            handled.add(ws)
             if one_shot:
                 while time.time() < we + config.RESOLVE_BUFFER_SEC + 2:
-                    # keep capturing so we get the close price
                     n2 = time.time()
                     w2 = int(n2 // config.WINDOW_SEC) * config.WINDOW_SEC
                     if w2 not in window_open and feed.price_now() is not None:
@@ -373,7 +395,6 @@ def main():
             git_autopush()
             last_push = now
 
-        handled = {w for w in handled if w >= ws - config.WINDOW_SEC}
         time.sleep(3)
 
     print("Done.")
