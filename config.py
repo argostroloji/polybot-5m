@@ -56,4 +56,11 @@ MIN_STAKE = 1.0                  # skip if Kelly stake below this
 
 # --- Paper bankroll ---
 STARTING_BANKROLL = 100.0
-BANKROLL_FILE = "bankroll.json"
+BANKROLL_FILE = "bankroll.json"            # "HOLD" strategy (buy & hold to settle)
+
+# --- Stop-loss / early-exit experiment ---
+# We run a second virtual portfolio on the SAME entries that, instead of
+# holding to settlement, SELLS the position back into the order book if the
+# outcome turns against us. This lets us compare HOLD vs STOP head-to-head.
+BANKROLL_STOP_FILE = "bankroll_stop.json"  # "STOP" strategy
+EXIT_PROB = 0.45        # if our side's win-prob falls below this, sell to cut loss

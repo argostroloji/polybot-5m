@@ -57,6 +57,18 @@ def save_bankroll(v: float):
         json.dump({"bankroll": round(v, 4)}, f)
 
 
+def load_bankroll_stop() -> float:
+    if os.path.exists(config.BANKROLL_STOP_FILE):
+        with open(config.BANKROLL_STOP_FILE) as f:
+            return json.load(f)["bankroll"]
+    return config.STARTING_BANKROLL
+
+
+def save_bankroll_stop(v: float):
+    with open(config.BANKROLL_STOP_FILE, "w") as f:
+        json.dump({"bankroll": round(v, 4)}, f)
+
+
 def load_pending():
     if os.path.exists(PENDING_FILE):
         with open(PENDING_FILE) as f:
@@ -84,7 +96,8 @@ LAST_EVAL = "starting up"
 def write_heartbeat(note: str, feed=None):
     hb = {
         "utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "bankroll": load_bankroll(),
+        "bankroll_hold": load_bankroll(),
+        "bankroll_stop": load_bankroll_stop(),
         "open_bets": len(load_pending()),
         "last": note,
         "last_eval": LAST_EVAL,
@@ -128,6 +141,19 @@ def best_ask(token_id: str):
         return None, None
     best = min(asks, key=lambda x: float(x["price"]))
     return float(best["price"]), float(best["size"])
+
+
+def best_bid(token_id: str):
+    """Best bid price we could SELL into (to exit a position early)."""
+    try:
+        b = requests.get(f"{config.CLOB}/book", params={"token_id": token_id},
+                        headers=HEADERS, timeout=15).json()
+    except Exception:
+        return None
+    bids = b.get("bids", [])
+    if not bids:
+        return None
+    return max(float(x["price"]) for x in bids)
 
 
 # ---------------- volatility + probability ----------------
@@ -231,12 +257,17 @@ def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending,
         "window_start": window_start,
         "window_end": window_end,
         "side": side,
+        "token_id": toks[token_idx],
         "entry_price": ask,
         "shares": round(shares, 4),
         "model_prob": round(q, 4),
         "edge": round(edge, 4),
         "price_to_beat": price_to_beat,
         "stake": round(cost, 4),
+        # STOP-strategy bookkeeping (HOLD ignores these):
+        "stopped": False,
+        "stop_proceeds": None,
+        "stop_price": None,
     })
     save_pending(pending)
     print(f"  window {dt.datetime.utcfromtimestamp(window_start):%H:%M} -> "
@@ -245,10 +276,45 @@ def decide(feed: ChainlinkFeed, window_start: int, window_end: int, pending,
     return True
 
 
+def monitor_stops(feed: ChainlinkFeed, pending, window_open: dict):
+    """STOP strategy: for each open position still inside its window, if our
+    side's win-prob has fallen below EXIT_PROB, 'sell' the shares at the best
+    bid to cut the loss. Records the proceeds on the entry (HOLD ignores it).
+    Returns True if any position changed."""
+    now = time.time()
+    sig = sigma_per_sec(feed)
+    cur = feed.price_now()
+    changed = False
+    for p in pending:
+        if p.get("stopped") or "window_end" not in p:
+            continue
+        if now >= p["window_end"] or cur is None:
+            continue  # window over -> settlement handles it
+        t_remaining = p["window_end"] - now
+        move = cur - p["price_to_beat"]
+        p_up = prob_up(move, t_remaining, sig)
+        q_now = p_up if p["side"] == "Up" else 1 - p_up
+        if q_now >= config.EXIT_PROB:
+            continue  # still looks like a winner, hold
+        bid = best_bid(p.get("token_id", ""))
+        if bid is None:
+            continue  # no buyer to sell into; can't exit, will settle
+        p["stopped"] = True
+        p["stop_price"] = bid
+        p["stop_proceeds"] = round(p["shares"] * bid, 4)
+        changed = True
+        print(f"  STOP-EXIT {p['side']} {p['market']}: sold {p['shares']:.1f}sh "
+              f"@ {bid:.2f} (q_now={q_now:.2f})")
+    if changed:
+        save_pending(pending)
+    return changed
+
+
 def resolve_due(feed: ChainlinkFeed, pending, window_open: dict):
     now = time.time()
     changed = False
-    bankroll = load_bankroll()
+    bankroll = load_bankroll()             # HOLD strategy
+    bankroll_stop = load_bankroll_stop()   # STOP strategy
     still = []
     for p in pending:
         # skip malformed / old-format entries defensively
@@ -270,12 +336,19 @@ def resolve_due(feed: ChainlinkFeed, pending, window_open: dict):
         went_up = final >= p["price_to_beat"]
         won = (p["side"] == "Up" and went_up) or (p["side"] == "Down" and not went_up)
         cost = p["stake"]
-        # shares each pay $1 if won, $0 if lost. Subtract a per-trade cost
-        # (fees/gas) to stay conservative.
         shares = p.get("shares", cost / p["entry_price"])
-        gross = (shares - cost) if won else (-cost)
-        pnl = gross - config.TRADE_COST_USD
-        bankroll += pnl
+
+        # HOLD: hold to settlement. Shares pay $1 if won, $0 if lost.
+        hold_pnl = ((shares - cost) if won else -cost) - config.TRADE_COST_USD
+
+        # STOP: if we sold early, PnL = proceeds - cost; else same as HOLD.
+        if p.get("stopped") and p.get("stop_proceeds") is not None:
+            stop_pnl = p["stop_proceeds"] - cost - config.TRADE_COST_USD
+        else:
+            stop_pnl = hold_pnl
+
+        bankroll += hold_pnl
+        bankroll_stop += stop_pnl
         append_log({
             "decided_at": p["decided_at"],
             "market": p["market"],
@@ -287,19 +360,22 @@ def resolve_due(feed: ChainlinkFeed, pending, window_open: dict):
             "cost_usd": round(cost, 4),
             "price_to_beat": p["price_to_beat"],
             "final_price": round(final, 2),
-            "went_up": went_up,
             "won": won,
-            "pnl_usd": round(pnl, 4),
-            "bankroll": round(bankroll, 4),
+            "stopped": bool(p.get("stopped")),
+            "stop_price": p.get("stop_price"),
+            "hold_pnl": round(hold_pnl, 4),
+            "stop_pnl": round(stop_pnl, 4),
+            "bankroll_hold": round(bankroll, 4),
+            "bankroll_stop": round(bankroll_stop, 4),
         })
-        print(f"  RESOLVED {p['side']} {p['market']}: beat={p['price_to_beat']:.1f} "
-              f"final={final:.1f} won={won} pnl=${pnl:+.2f} bankroll=${bankroll:.2f}")
+        print(f"  RESOLVED {p['side']} {p['market']}: won={won} "
+              f"hold=${hold_pnl:+.2f} stop=${stop_pnl:+.2f} | "
+              f"HOLD=${bankroll:.2f} STOP=${bankroll_stop:.2f}")
         changed = True
     if changed:
         save_bankroll(bankroll)
-        save_pending(still)
-    else:
-        save_pending(still)
+        save_bankroll_stop(bankroll_stop)
+    save_pending(still)
     return changed
 
 
@@ -312,8 +388,9 @@ def git_autopush():
 
     run("config", "user.name", "polybot")
     run("config", "user.email", "polybot@users.noreply.github.com")
-    files = [f for f in (config.BANKROLL_FILE, LOG_FILE, PENDING_FILE,
-                         "heartbeat.json") if os.path.exists(f)]
+    files = [f for f in (config.BANKROLL_FILE, config.BANKROLL_STOP_FILE,
+                         LOG_FILE, PENDING_FILE, "heartbeat.json")
+             if os.path.exists(f)]
     run("add", *files)
     if run("diff", "--cached", "--quiet").returncode == 0:
         return
@@ -370,6 +447,9 @@ def main():
 
         pending = load_pending()
         state_changed = resolve_due(feed, pending, window_open)
+        # STOP strategy: check open positions for early-exit each tick.
+        if monitor_stops(feed, pending, window_open):
+            state_changed = True
 
         # Hunt for a favorable fill across the back half of the window. We keep
         # checking every tick (until filled) instead of firing once — so we
