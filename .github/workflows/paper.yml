@@ -1,26 +1,27 @@
 name: paper-bot
 
-# Robust scheduling: a fresh job starts every hour and (because
-# cancel-in-progress is true) replaces whatever is running — even if the
-# previous job hung. Each job runs ~65 min, so there's overlap with the next
-# hourly trigger and effectively continuous coverage with no gap, while any
-# internal hang is automatically cleared within the hour.
+# Continuous operation without relying on GitHub's unreliable cron: each job
+# runs ~5.8h and, when it ends (even on timeout), triggers the next job itself
+# (self-chaining). The concurrency group serialises runs so two never overlap.
+# A low-frequency cron is kept only as a last-resort recovery if the chain ever
+# breaks. (Free unlimited minutes since the repo is public.)
 on:
   schedule:
-    - cron: "0 * * * *"     # every hour
+    - cron: "0 */6 * * *"     # backup recovery only
   workflow_dispatch:
 
 concurrency:
   group: paper-bot
-  cancel-in-progress: true   # a new run replaces a stuck/old one (self-healing)
+  cancel-in-progress: false
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -32,5 +33,11 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Run paper loop (~65 min, push state each cycle)
-        run: python -u paper.py --minutes 65 --autopush
+      - name: Run paper loop (~5.8h, push state each cycle)
+        run: python -u paper.py --minutes 350 --autopush
+
+      - name: Chain the next run (self-restart, even on failure/timeout)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run paper.yml -R ${{ github.repository }}
