@@ -12,8 +12,8 @@
     "edge": 0.7263,
     "price_to_beat": 63777.0422,
     "stake": 64.6386,
-    "stopped": false,
-    "stop_proceeds": null,
-    "stop_price": null
+    "stopped": true,
+    "stop_proceeds": 69.6108,
+    "stop_price": 0.28
   }
 ]
