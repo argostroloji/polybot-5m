@@ -1,10 +1,10 @@
 {
-  "utc": "2026-06-26T11:00:29+00:00",
+  "utc": "2026-06-26T11:01:30+00:00",
   "bankroll_hold": 82407.364,
   "bankroll_stop": 91289.3115,
   "open_bets": 0,
   "last": "ok",
   "last_eval": "Down: no ask offered (P(up)=0.000 move=-68.5 t=10s)",
-  "feed_price": 59217.25525328512,
-  "feed_age_sec": 17
+  "feed_price": 59263.97683207573,
+  "feed_age_sec": 3
 }
