@@ -1,1 +1,19 @@
-[]
+[
+  {
+    "decided_at": "2026-06-27T12:59:41.078145+00:00",
+    "market": "btc-updown-5m-1782564900",
+    "window_start": 1782564900,
+    "window_end": 1782565200,
+    "side": "Up",
+    "token_id": "37510182705066211098558352014651782949458353290406677635310355354434731722301",
+    "entry_price": 0.31,
+    "shares": 65.26,
+    "model_prob": 0.9815,
+    "edge": 0.6715,
+    "price_to_beat": 60314.8037160747,
+    "stake": 20.2306,
+    "stopped": false,
+    "stop_proceeds": null,
+    "stop_price": null
+  }
+]
